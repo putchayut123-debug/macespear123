@@ -1,0 +1,192 @@
+name: Build mod
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create mod files
+        run: |
+          mkdir -p src/main/java/com/example/macespear src/main/resources/assets/macespear/items src/main/resources/assets/macespear/models/item src/main/resources/assets/macespear/textures/item src/main/resources/assets/macespear/lang src/main/resources/data/macespear/recipe
+          cat > build.gradle <<'EOF_FILE'
+          plugins {
+              id 'fabric-loom' version "${loom_version}"
+              id 'maven-publish'
+          }
+          version = project.mod_version
+          group = project.maven_group
+          base { archivesName = project.archives_base_name }
+          repositories {}
+          dependencies {
+              minecraft "com.mojang:minecraft:${project.minecraft_version}"
+              mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+              modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+              modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+          }
+          processResources {
+              inputs.property "version", project.version
+              filesMatching("fabric.mod.json") { expand "version": inputs.properties.version }
+          }
+          tasks.withType(JavaCompile).configureEach { it.options.release = 21 }
+          java {
+              withSourcesJar()
+              sourceCompatibility = JavaVersion.VERSION_21
+              targetCompatibility = JavaVersion.VERSION_21
+          }
+          EOF_FILE
+          cat > gradle.properties <<'EOF_FILE'
+          org.gradle.jvmargs=-Xmx1G
+          org.gradle.parallel=true
+          # Check https://fabricmc.net/develop for the current values for 1.21.11
+          minecraft_version=1.21.11
+          yarn_mappings=1.21.11+build.1
+          loader_version=0.18.1
+          loom_version=1.14-SNAPSHOT
+          mod_version=1.0.0
+          maven_group=com.example
+          archives_base_name=macespear
+          fabric_api_version=0.139.0+1.21.11
+          EOF_FILE
+          cat > settings.gradle <<'EOF_FILE'
+          pluginManagement {
+              repositories {
+                  maven { url = 'https://maven.fabricmc.net/' }
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          EOF_FILE
+          cat > src/main/resources/fabric.mod.json <<'EOF_FILE'
+          {
+            "schemaVersion": 1,
+            "id": "macespear",
+            "version": "${version}",
+            "name": "Mace Spear",
+            "description": "A weapon that combines the mace smash with spear reach.",
+            "authors": ["You"],
+            "license": "MIT",
+            "environment": "*",
+            "entrypoints": { "main": ["com.example.macespear.MaceSpearMod"] },
+            "depends": {
+              "fabricloader": ">=0.17.0",
+              "minecraft": "~1.21.11",
+              "java": ">=21",
+              "fabric-api": "*"
+            }
+          }
+          EOF_FILE
+          cat > src/main/java/com/example/macespear/MaceSpearItem.java <<'EOF_FILE'
+          package com.example.macespear;
+          import net.minecraft.component.type.AttributeModifierSlot;
+          import net.minecraft.component.type.AttributeModifiersComponent;
+          import net.minecraft.entity.Entity;
+          import net.minecraft.entity.LivingEntity;
+          import net.minecraft.entity.attribute.EntityAttributeModifier;
+          import net.minecraft.entity.attribute.EntityAttributes;
+          import net.minecraft.entity.damage.DamageSource;
+          import net.minecraft.item.Item;
+          import net.minecraft.item.MaceItem;
+          import net.minecraft.util.Identifier;
+          /**
+           * Mace + spear hybrid.
+           *  - Mace part: inherited smash (fall-distance bonus damage, fall damage negation, smash effects).
+           *  - Spear part: long reach via attribute modifier, plus bonus damage while sprinting.
+           */
+          public class MaceSpearItem extends MaceItem {
+              private static final Identifier REACH_ID = Identifier.of(MaceSpearMod.MOD_ID, "reach");
+              private static final float SPRINT_BONUS = 4.0f;
+              public MaceSpearItem(Item.Settings settings) {
+                  super(settings);
+              }
+              public static AttributeModifiersComponent createAttributeModifiers() {
+                  return AttributeModifiersComponent.builder()
+                      .add(EntityAttributes.ATTACK_DAMAGE,
+                          new EntityAttributeModifier(Item.BASE_ATTACK_DAMAGE_MODIFIER_ID, 6.0,
+                              EntityAttributeModifier.Operation.ADD_VALUE),
+                          AttributeModifierSlot.MAINHAND)
+                      .add(EntityAttributes.ATTACK_SPEED,
+                          new EntityAttributeModifier(Item.BASE_ATTACK_SPEED_MODIFIER_ID, -3.0,
+                              EntityAttributeModifier.Operation.ADD_VALUE),
+                          AttributeModifierSlot.MAINHAND)
+                      // Spear reach: +1.5 blocks over the default
+                      .add(EntityAttributes.ENTITY_INTERACTION_RANGE,
+                          new EntityAttributeModifier(REACH_ID, 1.5,
+                              EntityAttributeModifier.Operation.ADD_VALUE),
+                          AttributeModifierSlot.MAINHAND)
+                      .build();
+              }
+              @Override
+              public float getBonusAttackDamage(Entity target, float baseAttackDamage, DamageSource damageSource) {
+                  float bonus = super.getBonusAttackDamage(target, baseAttackDamage, damageSource);
+                  if (damageSource.getSource() instanceof LivingEntity attacker && attacker.isSprinting()) {
+                      bonus += SPRINT_BONUS; // spear "charge" feel
+                  }
+                  return bonus;
+              }
+          }
+          EOF_FILE
+          cat > src/main/java/com/example/macespear/MaceSpearMod.java <<'EOF_FILE'
+          package com.example.macespear;
+          import net.fabricmc.api.ModInitializer;
+          import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
+          import net.minecraft.component.DataComponentTypes;
+          import net.minecraft.item.Item;
+          import net.minecraft.item.ItemGroups;
+          import net.minecraft.item.MaceItem;
+          import net.minecraft.registry.Registries;
+          import net.minecraft.registry.Registry;
+          import net.minecraft.registry.RegistryKey;
+          import net.minecraft.registry.RegistryKeys;
+          import net.minecraft.util.Identifier;
+          public class MaceSpearMod implements ModInitializer {
+              public static final String MOD_ID = "macespear";
+              public static final RegistryKey<Item> MACE_SPEAR_KEY =
+                  RegistryKey.of(RegistryKeys.ITEM, Identifier.of(MOD_ID, "mace_spear"));
+              public static final Item MACE_SPEAR = Registry.register(
+                  Registries.ITEM, MACE_SPEAR_KEY,
+                  new MaceSpearItem(new Item.Settings()
+                      .registryKey(MACE_SPEAR_KEY)
+                      .maxCount(1)
+                      .maxDamage(500)
+                      .component(DataComponentTypes.TOOL, MaceItem.createToolComponent())
+                      .attributeModifiers(MaceSpearItem.createAttributeModifiers())));
+              @Override
+              public void onInitialize() {
+                  ItemGroupEvents.modifyEntriesEvent(ItemGroups.COMBAT)
+                      .register(entries -> entries.add(MACE_SPEAR));
+              }
+          }
+          EOF_FILE
+          cat > src/main/resources/assets/macespear/items/mace_spear.json <<'EOF_FILE'
+          { "model": { "type": "minecraft:model", "model": "macespear:item/mace_spear" } }
+          EOF_FILE
+          cat > src/main/resources/assets/macespear/models/item/mace_spear.json <<'EOF_FILE'
+          { "parent": "minecraft:item/handheld", "textures": { "layer0": "macespear:item/mace_spear" } }
+          EOF_FILE
+          cat > src/main/resources/assets/macespear/lang/en_us.json <<'EOF_FILE'
+          { "item.macespear.mace_spear": "Mace Spear" }
+          EOF_FILE
+          cat > src/main/resources/data/macespear/recipe/mace_spear.json <<'EOF_FILE'
+          {
+            "type": "minecraft:crafting_shaped",
+            "category": "equipment",
+            "key": { "B": "minecraft:breeze_rod", "I": "minecraft:iron_ingot", "M": "minecraft:mace" },
+            "pattern": [" B ", "IMI", " B "],
+            "result": { "id": "macespear:mace_spear", "count": 1 }
+          }
+          EOF_FILE
+          echo 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAfElEQVR4nGNkIBOcOHv9PwMDAwMTJZrJBnneGv/JNiTPW+N/gLncqObBqXnVqp1wxaRoZmRgYGCIj8+EK+Z/s5/h0ZtvDBtOPmIkxgAmZM0MDAwMH0UcidbMwMDAwOTtHYAigM4naMDWrRtQBND5BA1YuHA6I7LNMD6xAADNckS8gPNwXAAAAABJRU5ErkJggg==' | base64 -d > src/main/resources/assets/macespear/textures/item/mace_spear.png
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: current
+      - run: gradle build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macespear-jar
+          path: build/libs/*.jar
